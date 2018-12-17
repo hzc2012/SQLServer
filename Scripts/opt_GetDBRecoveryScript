@@ -1,19 +1,23 @@
 
 /*生成还原数据库的脚本。该脚本将生成用于还原数据库的 SQL代码*/
 
-USE master
+USE [master]
 GO
-SET ANSI_NULLS ON
-GO
-SET QUOTED_IDENTIFIER ON
-GO
--- =============================================
--- Author:		Huang-ZeCheng(黄泽成)
--- Create date: 2016-11-25
--- Description:	Generate a script for restore database
--- =============================================
-CREATE PROCEDURE dbo.opt_GetDBRecoveryScript(
-	  @Database NVARCHAR(128)
+/*
+导出还原脚本 KK 2015-10-15
+DECLARE 
+ @Database NVARCHAR(128)
+,@RecoveryDBName NVARCHAR(128)
+,@RecoveryTime DATETIME
+,@RecoveryDBPath NVARCHAR(1000)
+SET @Database = N'Demodb'
+SET @RecoveryDBName = N'Demodb20151012'
+SET @RecoveryTime = N'2015-09-29 10:35:00'
+SET @RecoveryDBPath = N'G:\DataBase\Demodb20151012\'
+EXEC DBO.OPT_GetDBRecoveryScript @Database,@RecoveryDBName,@RecoveryTime,@RecoveryDBPath
+*/
+CREATE PROCEDURE [dbo].[OPT_GetDBRecoveryScript](
+	@Database NVARCHAR(128)
     , @RecoveryDBName NVARCHAR(128)
     , @RecoveryTime DATETIME
     , @RecoveryDBPath NVARCHAR(1000)
@@ -21,6 +25,9 @@ CREATE PROCEDURE dbo.opt_GetDBRecoveryScript(
 AS
 BEGIN
 SET NOCOUNT ON
+DECLARE @DatetimeStr NVARCHAR(30)
+SET @DatetimeStr = CONVERT(varchar(30),GETDATE(),112)+REPLACE(CONVERT(varchar(30),GETDATE(),24),':','')
+
 SET @Database = LTRIM(RTRIM(ISNULL(@Database,'')))
 SET @RecoveryDBName = LTRIM(RTRIM(ISNULL(@RecoveryDBName,'')))
 SET @RecoveryDBPath = LTRIM(RTRIM(ISNULL(@RecoveryDBPath,'')))
@@ -30,33 +37,30 @@ BEGIN
     PRINT N'输入不能为空！'
     RETURN -1
 END
-
+ 
 IF NOT EXISTS(SELECT 1 FROM msdb.dbo.backupset 
     WHERE database_name = @Database AND backup_finish_date >= @RecoveryTime)
 BEGIN
     PRINT N'该数据库当前时间无备份！'
     RETURN -1
 END
-
+ 
 IF EXISTS(SELECT * FROM Master.sys.sysdatabases WHERE name = @RecoveryDBName)
 BEGIN
     PRINT N'还原的数据库已存在，不可覆盖！'
     RETURN -1
 END
-
+ 
 IF (RIGHT(@RecoveryDBPath,1)<>'\')
     SET @RecoveryDBPath = @RecoveryDBPath + '\'
-
 /*DROP TABLE #FileExist*/
 CREATE TABLE #FileExist(ExistFile BIT,ExistPath BIT,ExistRoot BIT)
 INSERT INTO #FileExist EXEC master..xp_fileexist @RecoveryDBPath
-
 IF NOT EXISTS(SELECT * FROM #FileExist WHERE ExistRoot=1 AND ExistPath=1)
 BEGIN
     PRINT N'还原的路径不存在！'
     RETURN -1
 END
-
 
 /*利用最近的2次备份计算备份的间隔*/
 DECLARE @FullBackupInterval INT
@@ -65,26 +69,22 @@ DECLARE @LogBackupInterval  INT
 
 /*DROP TABLE #BackupDate*/
 CREATE TABLE #BackupDate(type VARCHAR(1),FinishDate DATETIME,ID tinyint)
-
 INSERT INTO #BackupDate(type,FinishDate,ID)
 SELECT TOP(2) type,backup_finish_date,ROW_NUMBER()OVER(ORDER BY backup_finish_date DESC) ID
 FROM msdb.dbo.backupset(NOLOCK)
 WHERE database_name = @Database and type = 'D' 
 ORDER BY backup_finish_date DESC
-
 INSERT INTO #BackupDate(type,FinishDate,ID)
 SELECT TOP(2) type,backup_finish_date,ROW_NUMBER()OVER(ORDER BY backup_finish_date DESC) ID
 FROM msdb.dbo.backupset(NOLOCK)
 WHERE database_name = @Database and type = 'I' 
 ORDER BY backup_finish_date DESC
-
 INSERT INTO #BackupDate(type,FinishDate,ID)
 SELECT TOP(2) type,backup_finish_date,ROW_NUMBER()OVER(ORDER BY backup_finish_date DESC) ID
 FROM msdb.dbo.backupset(NOLOCK)
 WHERE database_name = @Database and type = 'L' 
 ORDER BY backup_finish_date DESC
-
-/*用于备份的间隔计算,增加5分钟减少误差 (5分钟内备份多次则无法判断)*/
+/*用于备份的间隔计算,增加5分钟减少误差*/
 SELECT 
  @FullBackupInterval=DateDiff(SS,D2_FinishDate,D1_FinishDate)+300
 ,@DiffBackupInterval=DateDiff(SS,I2_FinishDate,I1_FinishDate)+300
@@ -99,21 +99,17 @@ FROM(
 	MAX(CASE WHEN type='L' AND ID=2 THEN FinishDate ELSE '1900-01-01' END) L2_FinishDate
 	FROM #BackupDate
 ) AS TAB
-
-
 /*考虑几种情况: 完整 , 完整+日志 , 完整+差异 , 完整+差异+日志 */
 DECLARE @SCRIPT NVARCHAR(4000)
 DECLARE @FullBackupDatetime Datetime
 DECLARE @DiffBackupDatetime Datetime
 DECLARE @LogBackupDatetime Datetime
-
 /*取最接近还原时间的完整备份时间*/
 SELECT @FullBackupDatetime=MAX(backup_finish_date) 
 FROM msdb.dbo.backupset (NOLOCK)
 WHERE database_name = @Database AND type = 'D'
 AND backup_finish_date <= @RecoveryTime
 AND backup_finish_date > DATEADD(SS,-@FullBackupInterval,@RecoveryTime)
-
 SELECT @SCRIPT=physical_device_name 
 FROM msdb.dbo.backupmediafamily (NOLOCK)
 WHERE media_set_id IN(
@@ -122,18 +118,14 @@ WHERE media_set_id IN(
 	WHERE database_name = @Database AND type = 'D' 
 	AND backup_finish_date = @FullBackupDatetime
 )
-
 SET @SCRIPT = 
   N'RESTORE DATABASE ['+@RecoveryDBName+N'] '+CHAR(10)
 + N'FROM  DISK = N'''+@SCRIPT+''' '+CHAR(10)
 + N'WITH  FILE = 1, '+CHAR(10)
-
 SELECT @SCRIPT = @SCRIPT + N'MOVE N'''+name+N''' TO N'''
-+@RecoveryDBPath+REVERSE(LEFT(REVERSE(physical_name),CHARINDEX('\',REVERSE(physical_name))-1))+''','+CHAR(10)
++@RecoveryDBPath+REPLACE(REVERSE(LEFT(REVERSE(physical_name),CHARINDEX('\',REVERSE(physical_name))-1)),'.',@DatetimeStr+'.')+''','+CHAR(10)
 FROM sys.master_files 
 WHERE database_id = DB_ID(@Database); 
-
-
 /*还原时间是否刚好为完整备份时间,并输出脚本*/
 IF EXISTS(SELECT 1 FROM msdb.dbo.backupset(NOLOCK) 
     WHERE database_name = @Database AND type = 'D' AND backup_finish_date = @RecoveryTime)
@@ -149,9 +141,7 @@ BEGIN
 	PRINT '/*完整备份还原*/'
 	PRINT @SCRIPT
 END
-
 SET @SCRIPT = ''
-
 /*取最接近还原时间的差异备份时间*/
 SELECT @DiffBackupDatetime=MAX(backup_finish_date) 
 FROM msdb.dbo.backupset (NOLOCK)
@@ -159,7 +149,6 @@ WHERE database_name = @Database AND type = 'I'
 AND backup_finish_date <= @RecoveryTime
 AND backup_finish_date > DATEADD(SS,-@DiffBackupInterval,@RecoveryTime)
 AND backup_finish_date > @FullBackupDatetime/*并大于完整备份时间*/
-
 SELECT @SCRIPT=physical_device_name 
 FROM msdb.dbo.backupmediafamily (NOLOCK)
 WHERE media_set_id IN(
@@ -169,8 +158,6 @@ WHERE media_set_id IN(
 	AND backup_finish_date > @FullBackupDatetime
 	AND backup_finish_date = @DiffBackupDatetime 
 )
-
-
 IF (ISNULL(@SCRIPT,'')<>'')
 BEGIN
 	PRINT '/*差异备份还原*/'
@@ -200,9 +187,7 @@ ELSE /*完整+日志*/
 BEGIN
 	SET @DiffBackupDatetime = @FullBackupDatetime
 END
-
 SET @SCRIPT = ''
-
 /*取最接近还原时间的日志备份时间*/
 SELECT @SCRIPT = @SCRIPT
 +N'RESTORE LOG ['+@RecoveryDBName+N'] '+CHAR(10)
@@ -217,11 +202,9 @@ WHERE media_set_id IN(
 	AND backup_finish_date > @DiffBackupDatetime
 	AND backup_finish_date < @RecoveryTime 
 )
-
 PRINT '/*日志备份还原*/'
 PRINT @SCRIPT
 SET @SCRIPT = ''
-
 /*还原时间刚好为日志备份时间*/
 IF EXISTS(SELECT 1 FROM msdb.dbo.backupset (NOLOCK) 
     WHERE database_name = @Database AND type = 'L' AND backup_finish_date = @RecoveryTime)
@@ -250,7 +233,6 @@ BEGIN
 	AND backup_finish_date < DATEADD(SS,@LogBackupInterval,@RecoveryTime)
 	AND backup_finish_date > @RecoveryTime
 	AND backup_finish_date > @DiffBackupDatetime/*并大于差异备份时间*/
-
 	SELECT @SCRIPT = 
 	+N'RESTORE LOG ['+@RecoveryDBName+N'] '+CHAR(10)
 	+N'FROM  DISK = N'''+physical_device_name+N''''+CHAR(10)
@@ -269,7 +251,9 @@ END
 SET NOCOUNT OFF
 RETURN 0
 END
+
 GO
+
 
 
 
