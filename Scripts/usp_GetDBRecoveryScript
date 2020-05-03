@@ -14,9 +14,9 @@ SET @Database = N'Demodb'
 SET @RecoveryDBName = N'Demodb20151012'
 SET @RecoveryTime = N'2015-09-29 10:35:00'
 SET @RecoveryDBPath = N'G:\DataBase\Demodb20151012\'
-EXEC DBO.OPT_GetDBRecoveryScript @Database,@RecoveryDBName,@RecoveryTime,@RecoveryDBPath
+EXEC DBO.usp_GetDBRecoveryScript @Database,@RecoveryDBName,@RecoveryTime,@RecoveryDBPath
 */
-CREATE PROCEDURE [dbo].[OPT_GetDBRecoveryScript](
+CREATE PROCEDURE [dbo].[usp_GetDBRecoveryScript](
 	@Database NVARCHAR(128)
     , @RecoveryDBName NVARCHAR(128)
     , @RecoveryTime DATETIME
@@ -269,7 +269,7 @@ SET @RecoveryDBName = N'Demodb20161125'              --还原后的数据库名�
 SET @RecoveryTime = N'2016-11-11 10:35:00'           --还原的时间点
 SET @RecoveryDBPath = N'G:\DataBase\Demodb20161125\' --还原后数据库文件路径
 
-EXEC DBO.OPT_GetDBRecoveryScript @Database,@RecoveryDBName,@RecoveryTime,@RecoveryDBPath
+EXEC DBO.usp_GetDBRecoveryScript @Database,@RecoveryDBName,@RecoveryTime,@RecoveryDBPath
 GO
 
 
