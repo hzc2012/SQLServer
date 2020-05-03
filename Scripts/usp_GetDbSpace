@@ -1,0 +1,142 @@
+/*
+执行存储过程：exec master.dbo.usp_GetDbSpace
+该存储过程会调用另一个存储过程 usp_GetDbSpaceUsed
+*/
+
+USE [master]
+GO
+CREATE procedure [dbo].[usp_GetDbSpaceUsed]
+as
+begin
+set nocount on
+create table #dbsize(
+	 database_id int
+	,database_name nvarchar(1024)
+	,db_size_mb bigint
+	,db_space_available_mb bigint
+	,db_reserved_mb bigint
+	,reserved_data_mb bigint
+	,reserved_index_mb bigint
+	,reserved_unused_mb bigint
+)
+ 
+declare @database_id int
+declare @name nvarchar(1024)
+declare @sql nvarchar(max)
+declare cur cursor for select database_id,name from master.sys.databases where [state]=0 order by database_id
+open cur
+fetch next from cur into @database_id,@name
+while @@fetch_status=0
+begin
+set @sql =N'
+insert into #dbsize
+select
+	database_id = '+CONVERT(nvarchar(10),@database_id)+',
+	database_name = '''+@name+''',  
+	size_mb = ((dbsize + logsize) * 8192 / 1024/ 1024),  
+	space_available_mb = (case when dbsize >= reservedpages then ((dbsize-reservedpages)* 8192/ 1024/ 1024) else 0 end),
+	reserved_mb = (reservedpages * 8192 / 1024 / 1024), 
+	data_mb = (pages * 8192.0 / 1024/ 1024), 
+	index_mb = ((usedpages - pages)  * 8192 / 1024/ 1024), 
+	unused_mb = ((reservedpages - usedpages)  * 8192 / 1024/ 1024)
+from(
+	select 
+	dbsize = sum(convert(bigint,case when status & 64 = 0 then size else 0 end)) , 
+	logsize = sum(convert(bigint,case when status & 64 <> 0 then size else 0 end))  
+	from ['+@name+'].dbo.sysfiles
+) t1,(
+	select 
+	reservedpages = sum(a.total_pages),  
+	usedpages = sum(a.used_pages),  
+	pages = sum(  
+		CASE  
+		 When it.internal_type IN (202,204,211,212,213,214,215,216) Then 0  
+		 When a.type <> 1 Then a.used_pages  
+		 When p.index_id < 2 Then a.data_pages Else 0  
+		END )  
+	from ['+@name+'].sys.partitions p 
+	inner join ['+@name+'].sys.allocation_units a on p.partition_id = a.container_id  
+	left  join ['+@name+'].sys.internal_tables it on p.object_id = it.object_id  
+)t2'
+exec(@sql)
+fetch next from cur into @database_id,@name
+end
+close cur
+deallocate cur
+ 
+select * from #dbsize
+end
+GO
+ 
+ 
+CREATE procedure [dbo].[usp_GetDbSpace]
+as
+begin
+	set nocount on
+	--	drop table #dbsize
+	--	drop table #logsize
+	create table #dbsize(
+		 database_id int
+		,database_name nvarchar(1024)
+		,db_size_mb bigint
+		,db_space_available_mb bigint
+		,db_reserved_mb bigint
+		,reserved_data_mb bigint
+		,reserved_index_mb bigint
+		,reserved_unused_mb bigint
+	)
+	create table #logsize(
+		database_name nvarchar(1024)
+		,LogSize_MB decimal(24,8)
+		,LogSpaceUsed decimal(14,8)
+		,Status tinyint
+	)
+ 
+	insert into #dbsize exec master.dbo.usp_GetDbSpaceUsed
+	
+	insert into #logsize exec('DBCC sqlperf(logspace)')
+	
+	;WITH T AS (
+		select DISTINCT a.database_name,a.type
+		,CONVERT(varchar(30),a.backup_start_date,120) AS 最近备份时间
+		,convert(decimal(18,2),compressed_backup_size/1024/1024.)  as 备份大小MB
+		,DATEDIFF(MINUTE,backup_start_date,backup_finish_date) as 备份耗时Min
+		,ISNULL(REVERSE(stuff(REVERSE(physical_device_name),1,CHARINDEX('\',REVERSE(physical_device_name))-1,'')),'') as 备份目录
+		from msdb.dbo.backupset a
+		inner join (
+			select database_name,type,MAX(backup_start_date) as latest_backup_date
+			from msdb.dbo.backupset
+			group by database_name,type
+		)b on a.database_name=b.database_name and a.type=b.type and a.backup_start_date=b.latest_backup_date
+		left join msdb.dbo.backupmediafamily c on a.media_set_id=c.media_set_id
+	), BK AS (
+	SELECT T1.database_name
+	,T2.备份大小MB AS FULL_备份大小MB,T2.备份耗时Min AS FULL_备份耗时Min,T2.最近备份时间 AS FULL_最近备份时间,T2.备份目录 AS FULL_备份目录
+	,T3.备份大小MB AS DIFF_备份大小MB,T3.备份耗时Min AS DIFF_备份耗时Min,T3.最近备份时间 AS DIFF_最近备份时间,T3.备份目录 AS DIFF_备份目录
+	,T4.备份大小MB AS LOG_备份大小MB, T4.备份耗时Min AS LOG_备份耗时Min, T4.最近备份时间 AS LOG_最近备份时间, T4.备份目录 AS LOG_备份目录
+	FROM (SELECT DISTINCT database_name FROM T)T1
+	LEFT JOIN (SELECT * FROM T WHERE type='D') T2 ON T1.database_name=T2.database_name
+	LEFT JOIN (SELECT * FROM T WHERE type='I') T3 ON T1.database_name=T3.database_name
+	LEFT JOIN (SELECT * FROM T WHERE type='L') T4 ON T1.database_name=T4.database_name
+	) 
+	select t0.database_id,t0.database_name
+	,t0.db_size_mb as [数据库大小MB]
+	,t0.db_reserved_mb as [已用空间MB]
+	,t0.db_space_available_mb as [可用空间MB]
+	,convert(decimal(18,2),round(LogSize_MB,2)) as [日志大小MB]
+	,convert(decimal(18,2),round(LogSpaceUsed,2)) as [日志已使用%]
+	,t1.compatibility_level as [兼容级别]
+	,t1.collation_name as [校对规则]
+	,t1.recovery_model_desc as [恢复模式]
+	,FULL_备份大小MB,FULL_备份耗时Min,FULL_最近备份时间,FULL_备份目录
+	,DIFF_备份大小MB,DIFF_备份耗时Min,DIFF_最近备份时间,DIFF_备份目录
+	,LOG_备份大小MB, LOG_备份耗时Min, LOG_最近备份时间, LOG_备份目录
+	from #dbsize t0
+	inner join master.sys.databases t1 on t0.database_name=t1.name and t1.state_desc='ONLINE'
+	inner join #logsize t2 on t0.database_name=t2.database_name
+	left join BK on t0.database_name=BK.database_name
+end
+GO
+
+
+
