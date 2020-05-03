@@ -1,0 +1,46 @@
+/*
+此脚本可以自动判断结束系统堵塞进程。考虑到有正常长时间的SQL操作、或者偶尔出现的短时间的堵塞，请不要在数据库中一直运行脚本，只有在系统堵塞时再手动操作。
+ 
+以下脚本设置满足2个条件，当被堵塞的数量达到10个，并且堵塞源头已经执行超过30秒钟，则自动结束堵塞源头。 如果堵塞情况仍未解决，可能堵塞没那么多，修改以下2各参数处理。执行脚本结束掉的源头信息会输出到在当前查询中。
+*/
+ 
+ --满足以下2个参数的堵塞，自动结束该堵塞进程
+declare @BlockedCounts  int = 10  --被堵塞的累计数
+declare @BlockedSeconds int = 30  --源头堵塞时长(秒)
+if (select count(*) from master.dbo.sysprocesses where blocked > 0) > @BlockedCounts
+begin
+    declare @killSpid int,@killSpidStr varchar(500)='999999',@i int = 1
+ 
+    if object_id('tempdb..#process') is not null
+        drop table #process
+ 
+    select ROW_NUMBER()OVER(ORDER BY (select 1)) as id,
+    spid,blocked,lastwaittype,waitresource,[status],last_batch,hostname,[program_name],cmd,loginame,[text]
+    into #process from master.dbo.sysprocesses p cross apply master.sys.dm_exec_sql_text(p.sql_handle) s
+    WHERE spid<>@@SPID and blocked =0 and waittime>1000*@BlockedSeconds
+    and spid in(select sp.blocked from master.dbo.sysprocesses sp where sp.blocked>0)
+ 
+    begin try
+    while exists(select * from #process where id = @i)
+    begin
+        select @killSpid=spid from #process where id = @i
+        exec ('Kill '+@killSpid+';')
+        set @killSpidStr = @killSpidStr +','+ convert(varchar(10),@killSpid)
+        set @i = @i + 1
+    end
+ 
+    set @killSpidStr = right(@killSpidStr,len(@killSpidStr)-1)
+    exec('select ''  Kill info ==>> '' as KillInfo,* from #process where spid in('+@killSpidStr+');')
+    end try
+    begin catch
+        select error_number() as ErrorNumber 
+        ,error_severity() as ErrorSeverity 
+        ,error_state() as ErrorState 
+        ,error_line() as ErrorLine 
+        ,error_message() as ErrorMessage;
+    end catch
+end else select 'Did nothing!'
+go
+ 
+ 
+ 
