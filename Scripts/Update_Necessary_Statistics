@@ -1,21 +1,52 @@
 --更新规则：新表数据有变化；变化数据量大于10%表；排除 history 表；近2天未更新过统计信息(定时任务设置每天更新)
  
-SELECT 'create login [' + sp.name + '] '
-    + CASE WHEN sp.type IN ('U','G') THEN 'from windows ' ELSE '' END + 'with '
-    + CASE WHEN sp.type = 'S'
-        THEN 'password = ' + master.sys.fn_varbintohexstr(sl.password_hash) + ' hashed, ' 
-			+ 'sid = ' + master.sys.fn_varbintohexstr(sl.sid) + ', check_expiration = '
-            + CASE WHEN sl.is_expiration_checked > 0 THEN 'ON, ' ELSE 'OFF, ' END + 'check_policy = '
-            + CASE WHEN sl.is_policy_checked > 0 THEN 'ON, ' ELSE 'OFF, ' END
-            + CASE WHEN sl.credential_id > 0 THEN 'credential = ' + c.name + ', ' ELSE '' END
-        ELSE '' END + 'default_database = ' + sp.default_database_name
-    + CASE WHEN len(sp.default_language_name) > 0 THEN ', default_language = ' + sp.default_language_name ELSE '' END
-FROM sys.server_principals sp
-LEFT JOIN sys.sql_logins sl ON sp.principal_id = sl.principal_id
-LEFT JOIN sys.credentials c ON sl.credential_id = c.credential_id
-WHERE sp.type IN ('S','U','G')
-AND sl.sid <> 0x01
-AND sp.name NOT LIKE 'NT Service%'
-AND sp.name NOT LIKE 'NT Authority%'
-AND sp.name NOT LIKE '##%'
+SET NOCOUNT ON
+IF OBJECT_ID('tempdb..#update_stat') is not null
+    DROP TABLE #update_stat
+CREATE TABLE #update_stat(id INT IDENTITY(1,1),execsql VARCHAR(300))
 GO
+DECLARE @dbname VARCHAR(128)
+DECLARE @sql    VARCHAR(4000)
+DECLARE db_cur CURSOR FOR SELECT name FROM sys.databases WHERE state=0 AND database_id>4
+OPEN db_cur
+FETCH NEXT FROM db_cur INTO @dbname
+WHILE(@@FETCH_STATUS = 0)
+BEGIN
+    SET @sql  ='
+USE ['+@dbname+']
+;WITH T AS (
+    SELECT OBJECT_SCHEMA_NAME(C.[object_id]) AS schemaname
+    ,C.name AS tabname,A.name AS statname,a.[rows] AS tabrows,rowmodctr
+    ,stats_date(B.[object_id],B.stats_id) AS update_date
+    FROM SYS.SYSINDEXES A
+    INNER JOIN SYS.STATS B ON A.name = B.name
+    INNER JOIN SYS.TABLES C ON B.[object_id] = C.[object_id]
+    WHERE C.name NOT LIKE ''%history%''
+) INSERT INTO #update_stat(execsql)
+SELECT ''Update STATISTICS ['+@dbname+'].[''+schemaname+''].[''+tabname+''] [''+statname+''] WITH FULLSCAN;''
+FROM(
+    SELECT schemaname,tabname,statname,tabrows FROM T WHERE tabrows = 0 AND rowmodctr > 0
+    AND update_date<DATEADD(D,-2,GETDATE())
+    UNION
+    SELECT schemaname,tabname,statname,tabrows FROM T WHERE tabrows > 0 AND rowmodctr > 0 AND rowmodctr*1.0/tabrows > 0.1
+    AND update_date<DATEADD(D,-2,GETDATE())
+) T ORDER BY schemaname,tabname,statname;'
+    EXEC(@sql)
+FETCH NEXT FROM db_cur INTO @dbname
+END
+CLOSE db_cur
+DEALLOCATE db_cur
+GO
+DECLARE @i INT = 1,@execsql VARCHAR(300)
+WHILE EXISTS(SELECT * FROM #update_stat WHERE id=@i)
+BEGIN
+    SELECT @execsql = execsql FROM #update_stat WHERE id=@i
+    --RAISERROR (@execsql, 0, 1) WITH NOWAIT
+    EXEC(@execsql)
+    SET @i = @i + 1
+END
+GO
+IF OBJECT_ID('tempdb..#update_stat') is not null
+    DROP TABLE #update_stat
+GO
+SET NOCOUNT OFF
