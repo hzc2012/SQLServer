@@ -1,0 +1,15 @@
+--主要从扩展事件 system_health 查找
+--更多死锁跟踪及查看，参考本人博客：https://blog.csdn.net/kk185800961/article/details/42504857
+
+DECLARE @eventfile varchar(500);
+SELECT @eventfile = CAST(t.target_data as XML).value('EventFileTarget[1]/File[1]/@name', 'NVARCHAR(256)')
+FROM sys.dm_xe_session_targets t INNER JOIN sys.dm_xe_sessions s ON s.address = t.event_session_address
+WHERE s.name = 'system_health' AND t.target_name = 'event_file';
+SET @eventfile = Substring(@eventfile, 1, Len(@eventfile) - Charindex('\', Reverse(@eventfile))) +'\system_health_*.xel';
+SELECT CONVERT(xml, event_data).query('/event/data/value/child::*') AS DeadlockGraph
+,CONVERT(xml, event_data).value('(event[@name="xml_deadlock_report"]/@timestamp)[1]','datetime') AS Execution_Time
+FROM sys.fn_xe_file_target_read_file(@eventfile, null, null, null)
+WHERE [object_name] = 'xml_deadlock_report'
+ORDER BY Execution_Time DESC;
+GO
+
