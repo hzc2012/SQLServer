@@ -1,3 +1,5 @@
+--更新规则：新表数据有变化；变化数据量大于10%表；排除 history 表；近2天未更新过统计信息(定时任务设置每天更新)
+ 
 SELECT 'create login [' + sp.name + '] '
     + CASE WHEN sp.type IN ('U','G') THEN 'from windows ' ELSE '' END + 'with '
     + CASE WHEN sp.type = 'S'
