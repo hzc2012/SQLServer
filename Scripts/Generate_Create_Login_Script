@@ -1,3 +1,5 @@
+--导出登录账号创建脚本
+
 SELECT 'create login [' + sp.name + '] '
     + CASE WHEN sp.type IN ('U','G') THEN 'from windows ' ELSE '' END + 'with '
     + CASE WHEN sp.type = 'S'
@@ -11,8 +13,8 @@ SELECT 'create login [' + sp.name + '] '
 FROM sys.server_principals sp
 LEFT JOIN sys.sql_logins sl ON sp.principal_id = sl.principal_id
 LEFT JOIN sys.credentials c ON sl.credential_id = c.credential_id
-WHERE sp.type IN ('S','U','G')
-AND sl.sid <> 0x01
+WHERE sl.sid <> 0x01
+--AND sp.type IN ('S','U','G')
 AND sp.name NOT LIKE 'NT Service%'
 AND sp.name NOT LIKE 'NT Authority%'
 AND sp.name NOT LIKE '##%'
