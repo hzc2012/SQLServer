@@ -1,0 +1,87 @@
+
+/*
+统计当前登录账号拥有的服务器角色、服务器级别权限；
+统计每个数据库用户拥有的数据库角色权限（包括 partial 类型的数据库用户）
+*/
+
+if object_id('tempdb..#dbpms') is not null
+    drop table #dbpms
+go
+if object_id('tempdb..#permission') is not null
+    drop table #permission
+go
+CREATE TABLE #dbpms(
+    DbName          varchar(128),
+    DbSid           varbinary(64),
+    UserName        varchar(128),
+    DbPermissions   varchar(1000)
+)
+GO
+CREATE TABLE #permission(
+    LoginTpye       varchar(128),
+    Name            varchar(128),
+    CreateTime      datetime,
+    Type            char(2),
+    IsDisabled      bit,
+    ServerRole      varchar(1000),
+    SrvPermissions  varchar(1000),
+    DBName          varchar(128),
+    DBPermissions   varchar(1000)
+)
+GO
+DECLARE @dbname VARCHAR(128)
+DECLARE @exesql VARCHAR(2000)
+DECLARE dbcur CURSOR FOR SELECT name FROM sys.databases WHERE state=0 AND database_id>4
+OPEN dbcur
+FETCH NEXT FROM dbcur INTO @dbname
+WHILE (@@FETCH_STATUS = 0)
+BEGIN
+    SET @exesql = 'INSERT INTO #dbpms
+SELECT '''+@dbname+''' as db,u.sid,u.name,ISNULL(STUFF((
+    SELECT '',''+g.name FROM ['+@dbname+'].sys.database_role_members m
+    inner join ['+@dbname+'].sys.database_principals g on g.principal_id = m.role_principal_id
+    where u.principal_id = m.member_principal_id for xml path('''')
+),1,1,''''),''public'') as db_permissions
+FROM ['+@dbname+'].sys.database_principals u where u.type in(''S'',''G'',''U'') and u.sid is not null;
+ 
+IF EXISTS(SELECT * FROM sys.databases WHERE containment=1 AND name='''+@dbname+''')
+BEGIN
+    INSERT INTO #permission(LoginTpye,Name,CreateTime,Type,IsDisabled,ServerRole,SrvPermissions,DBName,DBPermissions)
+    SELECT ''DBUSER'' AS LoginTpye,name,create_date,type,0 AS is_disabled
+    ,'''' AS ServerRole,'''' AS SrvPermissions,'''+@dbname+''' AS DbName
+    ,ISNULL(STUFF((
+        SELECT '',''+g.name FROM ['+@dbname+'].sys.database_role_members m
+        inner join ['+@dbname+'].sys.database_principals g on g.principal_id = m.role_principal_id
+        where u.principal_id = m.member_principal_id for xml path('''')
+    ),1,1,''''),''public'') as db_permissions
+    FROM ['+@dbname+'].sys.database_principals u
+    WHERE type in(''S'') and sid is not null AND name NOT IN(''dbo'',''sys'',''guest'',''INFORMATION_SCHEMA'')
+    AND NOT EXISTS(SELECT * FROM .sys.server_principals SP WHERE u.sid=SP.sid)
+END;'
+    EXEC(@exesql)
+FETCH NEXT FROM dbcur INTO @dbname
+END
+CLOSE dbcur
+DEALLOCATE dbcur
+GO
+INSERT INTO #permission(LoginTpye,Name,CreateTime,Type,IsDisabled,ServerRole,SrvPermissions,DBName,DBPermissions)
+SELECT 'Login' AS LoginTpye,sp.name AS LoginName,sp.create_date AS CreateTime,sp.type AS LoginType
+,sp.is_disabled AS IsDisabled
+,ISNULL(rsp.name,'') AS ServerRole
+,ISNULL(STUFF((SELECT ','+permission_name FROM sys.server_permissions spp where sp.principal_id=spp.grantee_principal_id for xml path('')),1,1,''),'') as SrvPermissions
+,isnull(db.DbName,'') as DbName
+,isnull(db.DbPermissions,'') as DbPermissions
+FROM sys.server_principals sp 
+LEFT JOIN sys.server_role_members srm ON sp.principal_id=srm.member_principal_id 
+LEFT JOIN sys.server_principals rsp ON srm.role_principal_id=rsp.principal_id
+LEFT JOIN #dbpms db ON db.dbsid=SP.sid
+WHERE sp.type in('S','G','U')
+GO
+SELECT * FROM #permission ORDER BY LoginTpye DESC,Name,DbName
+GO
+if object_id('tempdb..#dbpms') is not null
+    drop table #dbpms
+go
+if object_id('tempdb..#permission') is not null
+    drop table #permission
+go
