@@ -1,0 +1,14 @@
+
+declare @base_tracefilename varchar(500) ;
+declare @indx int ;
+SELECT @base_tracefilename = Substring(PATH, 1, Len(PATH) - Charindex('\', Reverse(PATH))) +'\log.trc'
+FROM sys.traces WHERE  id = 1
+select DatabaseName
+, convert(varchar(10),StartTime,120) as StartDate
+, SUM(IntegerData*8.0/1024) as [ChangeInSize(MB)]
+, AVG(Duration/1000) as [AVG_Duration(ms)]
+from ::fn_trace_gettable( @base_tracefilename, default )
+where EventClass =92 and ServerName = @@servername and StartTime>'2020-05-01'
+group by DatabaseName,convert(varchar(10),StartTime,120)
+order by DatabaseName,StartDate 
+go
