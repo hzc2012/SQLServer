@@ -1,0 +1,42 @@
+--查看 sql server 实例的总体信息
+
+select @@servername as Instance
+,(select local_net_address from sys.dm_exec_connections where session_id = @@spid) as IP
+,(select local_tcp_port from sys.dm_exec_connections where session_id = @@spid) as Port
+,'SQL Server' AS DBType
+,CASE
+     WHEN CONVERT(VARCHAR(128),SERVERPROPERTY('ProductVersion')) like '8%'    THEN '2000'
+     WHEN CONVERT(VARCHAR(128),SERVERPROPERTY('ProductVersion')) like '9%'    THEN '2005'
+     WHEN CONVERT(VARCHAR(128),SERVERPROPERTY('ProductVersion')) like '10.0%' THEN '2008'
+     WHEN CONVERT(VARCHAR(128),SERVERPROPERTY('ProductVersion')) like '10.5%' THEN '2008 R2'
+     WHEN CONVERT(VARCHAR(128),SERVERPROPERTY('ProductVersion')) like '11%'   THEN '2012'
+     WHEN CONVERT(VARCHAR(128),SERVERPROPERTY('ProductVersion')) like '12%'   THEN '2014'
+     WHEN CONVERT(VARCHAR(128),SERVERPROPERTY('ProductVersion')) like '13%'   THEN '2016'
+     WHEN CONVERT(VARCHAR(128),SERVERPROPERTY('ProductVersion')) like '14%'   THEN '2017'
+     WHEN CONVERT(VARCHAR(128),SERVERPROPERTY('ProductVersion')) like '15%'   THEN '2019'
+     ELSE 'Unknown' END AS [Version]
+,SERVERPROPERTY('ProductVersion') as ProductVersion
+,SERVERPROPERTY ('Edition') as Edition
+,SERVERPROPERTY ('ProductLevel') as ProductLevel
+,SERVERPROPERTY ('IsHadrEnabled') as IsHadrEnabled
+,SERVERPROPERTY('Collation') as Collation
+,cast(round(physical_memory_kb*1.0/1024/1024,0) as int)as [Memory_GB]
+,(cpu_count/hyperthread_ratio) AS [P-CPU],cpu_count AS [L-CPU]
+,(select CONVERT(BIGINT,value)/1014 from sys.configurations where name='max server memory (mb)') as [MaxMemory_GB]
+,(select CONVERT(BIGINT,value_in_use)/1014  from sys.configurations where name='max server memory (mb)') as [RunMemory_GB]
+,max_workers_count as MaxWorkers
+,(select value_in_use from sys.configurations where name='max degree of parallelism') as [MaxDOP]
+,sqlserver_start_time as StartupTime
+,(select service_account from sys.dm_server_services where [filename] like '%sqlservr.exe%') as ServiceAccount
+,(select case
+    when windows_release like '10.0%' then 'Windows Server 2016'
+    when windows_release like '6.3%' then 'Windows Server 2012 R2'
+    when windows_release like '6.2%' then 'Windows Server 2012'
+    when windows_release like '6.1%' then 'Windows Server 2008 R2'
+    when windows_release like '6.0%' then 'Windows Server 2008'
+    when windows_release like '5.2%' then 'Windows Server 2003'
+    when windows_release like '5.1%' then 'Windows XP'
+    when windows_release like '5.0%' then 'Windows 2000'
+else '' end as WR from sys.dm_os_windows_info) as WindowsRelease
+from sys.dm_os_sys_info
+go
